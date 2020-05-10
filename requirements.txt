@@ -1,3 +1,5 @@
+numpy
+tifffile
 # local package
 -e .
 
