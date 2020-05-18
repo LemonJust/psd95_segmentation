@@ -1,3 +1,4 @@
+pandas
 numpy
 tifffile
 # local package

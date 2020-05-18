@@ -33,8 +33,6 @@ def plot_histogram(data, xlim, ylim):
 
 def plot_boxplot(df, x_axis, y_axis):
     """
-    The function to produce a box plot for two features in a data frame.
-
     Shows box plots of data in the data frame, grouping y_axis according x_axis label.
 
     Parameters:
@@ -43,7 +41,7 @@ def plot_boxplot(df, x_axis, y_axis):
         y_axis (string): the name of the df column to group according to x_axis.
 
     Returns:
-        ???: figure identifier TODO: fill in details
+        matplotlib.figure.Figure': figure
     """
     ax = sns.boxplot(x=x_axis, y=y_axis, data=df)
 
