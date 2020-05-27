@@ -71,7 +71,10 @@ before you do - figure out what RIDs you actually want.
 """
 syn_path = 'D:/Code/repos/psd95_segmentation/data/raw/csv/pallium/syn/'
 img_rid_df = list_available_segmentations(syn_path)
+img_rid_df.to_csv('D:/Code/repos/psd95_segmentation/data/raw/rid-img_pairs.csv')
+
 rids = np.squeeze(img_rid_df.loc[:, ['Syn RID 1']].values)
 
+#%%
 npz_path = 'D:/Code/repos/psd95_segmentation/data/raw/npz/pallium/syn/'
 download_npz(info_df, rids, npz_path)

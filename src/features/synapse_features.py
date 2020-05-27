@@ -1,4 +1,3 @@
-
 """
 Functions to extract synapse and nuclear features.
 """
@@ -16,28 +15,44 @@ import matplotlib.image as mpimg
 from sklearn.preprocessing import normalize
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+from scipy.spatial import cKDTree
 
 import os.path
 from os import path
 
 
-def make_dataset(info_csv, *argv):
+def nearest_pairs(v1, v2, radius):
     """
-    Prepares input as csv.
+    Adopted from synspy: https://github.com/informatics-isi-edu/synspy.git
+    Find nearest k-dimensional point pairs between v1 and v2 and return via output arrays.
 
-    Parameters:
-        info_csv (string) : path to csv with images, segmentation csv and npz locations.
-        *argv : images to include in dataset
+       Inputs:
+         v1: array with first pointcloud with shape (n, k)
+         kdt1: must be cKDTree(v1) for correct function
+         v2: array with second pointcloud with shape (m, k)
+         radius: maximum euclidean distance between points in a pair
+
+       Use greedy algorithm to assign nearest neighbors without
+       duplication of any point in more than one pair.
+
+       Outputs:
+         out1: for each point in kdt1, gives index of paired point from v2 or -1
+         out2: for each point in v2, gives index of paired point from v1 or -1
+
     """
+    depth = min(max(v1.shape[0], v2.shape[0]), 100)
 
-    for fish_id in argv:
+    out1 = np.full((v1.shape[0], 1), -1)
+    out2 = np.full((v2.shape[0], 1), -1)
 
-
-
-
-
-    return segmentation
-
+    kdt1 = cKDTree(v1)
+    dx, pairs = kdt1.query(v2, depth, distance_upper_bound=radius)
+    for d in range(depth):
+        for idx2 in np.argsort(dx[:, d]):
+            if dx[idx2, d] < radius:
+                if out2[idx2] == -1 and out1[pairs[idx2, d]] == -1:
+                    out2[idx2] = pairs[idx2, d]
+                    out1[pairs[idx2, d]] = idx2
 
 
 def get_centroids(parts):
@@ -105,6 +120,31 @@ def get_centroids_and_labels(csv_filename, npz_filename):
     return centroids_tiff, labels
 
 
+# get the volume around one synapse with the bounding box padding
+def get_one_volume(volume, centroid, box_size):
+    """
+    From volume, crops one box of size (padding*2 + 1) around the center centroid.
+
+    Parameters:
+        volume (array) : 3D image to crop from
+        centroid (array) : 3D coordinates, ZYX, in volume to crop around
+        box_size (array) : the box size in 3D , ZYX. All 3 must be odd.
+        TODO : add this check
+
+    Returns:
+        array : cropped box
+    """
+
+    centroid = np.array(centroid)
+    padding = np.array((box_size-1)//2)
+
+    start = centroid - padding
+    end = centroid + padding + 1
+
+    cropped_volume = volume[start[0]:end[0], start[1]:end[1], start[2]:end[2]]
+    return cropped_volume
+
+################################ END OF GOOD ##############################################
 # get_centroids_from_csv: centroid coordinates in the Tiff space directly as in csv (Z,Y,X)
 def get_centroids_from_csv(csv_filename):
     pass
@@ -256,22 +296,7 @@ def make_cube(volume, centroids, padding):
     return volume
 
 
-# get the volume around one synapse with the bounding box padding
-def get_one_volume(image_file, centroid, padding):
-    volume = tif.imread(image_file)
-    d0 = centroid[0]
-    d1 = centroid[1]
-    d2 = centroid[2]
 
-    d0_left = d0 - padding[0]
-    d1_left = d1 - padding[1]
-    d2_left = d2 - padding[2]
-    d0_right = d0 + 1 + padding[0]
-    d1_right = d1 + 1 + padding[1]
-    d2_right = d2 + 1 + padding[2]
-
-    cropped_volume = volume[d0_left:d0_right, d1_left:d1_right, d2_left:d2_right]
-    return cropped_volume
 
 
 def get_all_volumes(image_file, centroids, padding):
@@ -615,6 +640,3 @@ def print_acc_different_threshold(predictions):
     acc = accuracy_score(predictionsArr, labels)
     print('Threshold    acc')
     print(thr, ' ', acc)
-
-
-
