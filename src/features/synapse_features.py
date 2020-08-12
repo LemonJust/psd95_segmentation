@@ -53,6 +53,7 @@ def nearest_pairs(v1, v2, radius):
                 if out2[idx2] == -1 and out1[pairs[idx2, d]] == -1:
                     out2[idx2] = pairs[idx2, d]
                     out1[pairs[idx2, d]] = idx2
+    return out2
 
 
 def get_centroids(parts):
@@ -136,7 +137,7 @@ def get_one_volume(volume, centroid, box_size):
     """
 
     centroid = np.array(centroid)
-    padding = np.array((box_size-1)//2)
+    padding = np.array((box_size - 1) // 2)
 
     start = centroid - padding
     end = centroid + padding + 1
@@ -144,13 +145,72 @@ def get_one_volume(volume, centroid, box_size):
     cropped_volume = volume[start[0]:end[0], start[1]:end[1], start[2]:end[2]]
     return cropped_volume
 
+def get_centroids_from_csv(csv_filename, img_resolution):
+    """
+    Get centroids in tiff space directly from csv file.
+    In csv the coordinates are in the physical space, so you need to know the image
+    resolution that was used when producing csv.
+
+    Parameters:
+        csv_filename (string) : path and filename of the csv.
+        img_resolution : image resolution in order ZYX.
+
+    Returns:
+        centroids_tiff (np.array) : array of centroids in tiff sace in pixels, in order ZYX.
+    """
+
+    col_list = ["Z", "Y", "X"]
+
+    centroids_phys = pd.read_csv(csv_filename, usecols=col_list)
+    centroids_tiff = np.round(
+        centroids_phys.to_numpy() / np.array(img_resolution)).astype(int)
+
+    return centroids_tiff
+
+def get_intensity_from_csv(csv_filename, img_resolution):
+    """
+    Get centroids in tiff space directly from csv file.
+    In csv the coordinates are in the physical space, so you need to know the image
+    resolution that was used when producing csv.
+
+    Parameters:
+        csv_filename (string) : path and filename of the csv.
+        img_resolution : image resolution in order ZYX.
+
+    Returns:
+        centroids_tiff (np.array) : array of centroids in tiff sace in pixels, in order ZYX.
+    """
+
+    col_list = ["raw core", "raw hollow"]
+
+    intensity_df = pd.read_csv(csv_filename, usecols=col_list)
+    centroids_core_hollow = intensity_df.to_numpy()
+
+    return centroids_core_hollow
+
+def get_cohort(csv_filename, img_resolution):
+    """
+    Get all the info from the pair-study csv. Synapse coordinates are in physical
+    space, so you need to know the original resolution to go to pixel space.
+
+    Parameters:
+        csv_filename (string) : path and filename of the csv.
+        img_resolution : image resolution in order ZYX.
+
+    Returns:
+        syn (dict) : array of centroids in tiff sace in pixels, in order ZYX.
+
+    """
+
+    col_list = ["raw core", "raw hollow"]
+
+    intensity_df = pd.read_csv(csv_filename, usecols=col_list)
+    centroids_core_hollow = intensity_df.to_numpy()
+
+    return syn
+
 ################################ END OF GOOD ##############################################
 # get_centroids_from_csv: centroid coordinates in the Tiff space directly as in csv (Z,Y,X)
-def get_centroids_from_csv(csv_filename):
-    pass
-    # finish it!!!
-    return centroids_csv
-
 
 # write centroid coordinates in the Tiff space to csv file
 def write_centroids_to_file(csvfilename, npz_filename, save_name):
@@ -296,9 +356,6 @@ def make_cube(volume, centroids, padding):
     return volume
 
 
-
-
-
 def get_all_volumes(image_file, centroids, padding):
     volume = tif.imread(image_file)
     dims = 2 * padding + 1
@@ -374,8 +431,9 @@ def split_data_equal(data, labels):
     X_0 = X_0[keep, :]
     new_label = np.concatenate((np.ones((X_1.shape[0], 1)),
                                 np.zeros((X_0.shape[0], 1))), axis=0)
-    X_train, X_test, y_train, y_test = train_test_split(np.concatenate((X_1, X_0), axis=0),
-                                                        new_label, test_size=0.1)
+    X_train, X_test, y_train, y_test = train_test_split(
+        np.concatenate((X_1, X_0), axis=0),
+        new_label, test_size=0.1)
     return X_train, X_test, y_train, y_test
 
 
@@ -383,12 +441,14 @@ def split_data_2Xmore0(data, labels):
     X_1 = data[labels == 1]
     X_0 = data[labels == 0]
     weight_0 = 2
-    keep = np.random.choice(range(X_0.shape[0]), size=weight_0 * X_1.shape[0], replace=False)
+    keep = np.random.choice(range(X_0.shape[0]), size=weight_0 * X_1.shape[0],
+                            replace=False)
     X_0 = X_0[keep, :]
     new_label = np.concatenate((np.ones((X_1.shape[0], 1)),
                                 np.zeros((X_0.shape[0], 1))), axis=0)
-    X_train, X_test, y_train, y_test = train_test_split(np.concatenate((X_1, X_0), axis=0),
-                                                        new_label, test_size=0.1)
+    X_train, X_test, y_train, y_test = train_test_split(
+        np.concatenate((X_1, X_0), axis=0),
+        new_label, test_size=0.1)
     return X_train, X_test, y_train, y_test
 
 
@@ -437,12 +497,14 @@ def split_data_more0(data, labels, weight_0):
     X_1 = data[labels == 1]
     X_0 = data[labels == 0]
 
-    keep = np.random.choice(range(X_0.shape[0]), size=weight_0 * X_1.shape[0], replace=False)
+    keep = np.random.choice(range(X_0.shape[0]), size=weight_0 * X_1.shape[0],
+                            replace=False)
     X_0 = X_0[keep, :]
     new_label = np.concatenate((np.ones((X_1.shape[0], 1)),
                                 np.zeros((X_0.shape[0], 1))), axis=0)
-    X_train, X_test, y_train, y_test = train_test_split(np.concatenate((X_1, X_0), axis=0),
-                                                        new_label, test_size=0.1)
+    X_train, X_test, y_train, y_test = train_test_split(
+        np.concatenate((X_1, X_0), axis=0),
+        new_label, test_size=0.1)
     return X_train, X_test, y_train, y_test
 
 
@@ -470,7 +532,8 @@ def get_files(segmentation):
 def get_files_from_cohort(segmentation):
     csvfilename = 'D:\\TR01\\1640Cohort\\CsvFiles\\Syn' + segmentation + '.synapses-only.csv'
     npz_filename = 'D:\\TR01\\1640Cohort\\NpzFiles\\Syn' + segmentation + '.npz'
-    image_file_green = 'D:\\TR01\\1640Cohort\\GreenDataFR\\' + segmentation[:-1] + '_green.tif'
+    image_file_green = 'D:\\TR01\\1640Cohort\\GreenDataFR\\' + segmentation[
+                                                               :-1] + '_green.tif'
     image_file_red = 'D:\\TR01\\1640Cohort\\R2G_Images\\' + segmentation[:-1] + '_r2g.tif'
     nucfilename = 'Missing'
 
@@ -481,13 +544,15 @@ def get_files_from_cohort(segmentation):
 def get_train_data(segmentations, padding, intensity_padding):
     num_datasets = len(segmentations)
     last_dat = num_datasets - 1
-    csvfilename, npz_filename, image_file_green, image_file_r2g, nucfilename = get_files(segmentations[last_dat])
+    csvfilename, npz_filename, image_file_green, image_file_r2g, nucfilename = get_files(
+        segmentations[last_dat])
 
     # get centroids and labels
     centroids, labels = get_centroids_and_labels(csvfilename, npz_filename)
     num_syn = centroids.shape[0]
     # add fish ID
-    centroids_and_fish = np.concatenate((centroids, np.ones((num_syn, 1)) * (last_dat + 1)), axis=1)
+    centroids_and_fish = np.concatenate(
+        (centroids, np.ones((num_syn, 1)) * (last_dat + 1)), axis=1)
 
     # get normalized image and intensity in grenn channel
     volumes = get_all_volumes(image_file_green, centroids, padding)
@@ -505,15 +570,18 @@ def get_train_data(segmentations, padding, intensity_padding):
     # centroids_nuc = get_centroids(csv_filename,npz_filename)
 
     for i_fish in range(last_dat):
-        csvfilename, npz_filename, image_file_green, image_file_r2g, nucfilename = get_files(segmentations[i_fish])
+        csvfilename, npz_filename, image_file_green, image_file_r2g, nucfilename = get_files(
+            segmentations[i_fish])
 
         # get centroids and labels
         centroids, i_labels = get_centroids_and_labels(csvfilename, npz_filename)
         labels = np.concatenate((labels, i_labels), axis=0)
         num_syn = centroids.shape[0]
         # add fish ID
-        i_centroids_and_fish = np.concatenate((centroids, np.ones((num_syn, 1)) * (i_fish + 1)), axis=1)
-        centroids_and_fish = np.concatenate((centroids_and_fish, i_centroids_and_fish), axis=0)
+        i_centroids_and_fish = np.concatenate(
+            (centroids, np.ones((num_syn, 1)) * (i_fish + 1)), axis=1)
+        centroids_and_fish = np.concatenate((centroids_and_fish, i_centroids_and_fish),
+                                            axis=0)
 
         # get normalized image and intensity in grenn channel
         i_volumes = get_all_volumes(image_file_green, centroids, padding)
@@ -568,11 +636,13 @@ def predict_and_create_csv(model, segmentation, output_path, output_filename, pa
     props = json.loads(parts['properties'].tostring().decode('utf8'))
 
     centroids = parts['centroids'].astype(np.int32)
-    measures = parts['measures'].astype(np.float32) * np.float32(props['measures_divisor'])
+    measures = parts['measures'].astype(np.float32) * np.float32(
+        props['measures_divisor'])
     slice_origin = np.array(props['slice_origin'], dtype=np.int32)
 
     # build dense status array from sparse CSV
-    statuses, saved_parms = load_segment_status_from_csv(centroids, slice_origin, csvfilename)
+    statuses, saved_parms = load_segment_status_from_csv(centroids, slice_origin,
+                                                         csvfilename)
 
     thr = 0.6
     statuses[:] = 0
@@ -580,7 +650,8 @@ def predict_and_create_csv(model, segmentation, output_path, output_filename, pa
     # statuses[predictionsArr==0] = 5
     statuses[predictionsArr == 1] = 7
     print('Sum 0.6', sum(predictionsArr))
-    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin, output_path + "thr0p6\\" + output_filename,
+    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin,
+                             output_path + "thr0p6\\" + output_filename,
                              all_segments=False)
 
     thr = 0.85
@@ -589,7 +660,8 @@ def predict_and_create_csv(model, segmentation, output_path, output_filename, pa
     # statuses[predictionsArr==0] = 5
     statuses[predictionsArr == 1] = 7
     print('Sum 0.85', sum(predictionsArr))
-    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin, output_path + "thr0p85\\" + output_filename,
+    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin,
+                             output_path + "thr0p85\\" + output_filename,
                              all_segments=False)
 
     thr = 0.95
@@ -598,7 +670,8 @@ def predict_and_create_csv(model, segmentation, output_path, output_filename, pa
     # statuses[predictionsArr==0] = 5
     statuses[predictionsArr == 1] = 7
     print('Sum 0.95', sum(predictionsArr))
-    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin, output_path + "thr0p95\\" + output_filename,
+    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin,
+                             output_path + "thr0p95\\" + output_filename,
                              all_segments=False)
 
     print('Done')
@@ -622,15 +695,18 @@ def create_csv(predictionsArr, segmentation, output_filename):
     props = json.loads(parts['properties'].tostring().decode('utf8'))
 
     centroids = parts['centroids'].astype(np.int32)
-    measures = parts['measures'].astype(np.float32) * np.float32(props['measures_divisor'])
+    measures = parts['measures'].astype(np.float32) * np.float32(
+        props['measures_divisor'])
     slice_origin = np.array(props['slice_origin'], dtype=np.int32)
 
     # build dense status array from sparse CSV and override statuses
-    statuses, saved_parms = load_segment_status_from_csv(centroids, slice_origin, csvfilename)
+    statuses, saved_parms = load_segment_status_from_csv(centroids, slice_origin,
+                                                         csvfilename)
     statuses[:] = 0
     statuses[predictionsArr == 1] = 7
 
-    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin, output_filename, all_segments=False)
+    dump_segment_info_to_csv(centroids, measures, statuses, slice_origin, output_filename,
+                             all_segments=False)
     print('Saved ', output_filename)
 
 
