@@ -1,0 +1,226 @@
+#!/usr/bin/python
+#
+# Copyright 2015-2017 University of Southern California
+# Distributed under the (new) BSD License. See LICENSE.txt for more info.
+#
+
+import os
+import sys
+import numpy as np
+import csv
+import json
+import vispy.scene
+from vispy.scene import visuals
+import math
+from functools import reduce
+
+from deriva.core import ErmrestCatalog, HatracStore, get_credential, urlquote
+from synspy.analyze.util import centroids_zx_swap, load_registered_csv
+from synspy.analyze.pair import SynapticPairStudy
+
+def get_env_splat_sizes():
+    segment_sizes = list(map(float, os.getenv('SEGMENT_SIZES', '30,4').split(',')))
+    assert len(segment_sizes) == 2
+    return segment_sizes
+
+def renormalize_inplace(arrays):
+    maxweight = reduce(max, [ np.percentile(a, 90) for a in arrays if a.shape[0] > 0 ], 1.0)
+    for w in arrays:
+        w[:] = w[:] * np.float32(1.0/maxweight)
+        w[:] = w[:] * (w[:] < 1.0) + (w[:] >= 1.0)
+
+def draw_points(view, a, weights, face_color, size=10):
+    scatter = visuals.Markers()
+    scatter.set_gl_state(depth_test=False)
+    scatter.antialias = False
+    colors = np.zeros((weights.shape[0], 4), np.float32)
+    for i in range(3):
+        colors[:,i] = weights
+    colors[:,3] = 1.0
+    colors[:,:] *= np.array(face_color, np.float32)
+    scatter.set_data(a, edge_color=None, face_color=colors, edge_width=0, size=size)
+    view.add(scatter)
+    return scatter
+
+def draw_pairs(view, a, weights, face_colors, size=10):
+    a2 = np.zeros((a.shape[0] * 2, a.shape[2]), dtype=a.dtype)
+    cl = np.zeros((a.shape[0] * 2, 4), dtype=np.float32)
+
+    a2[0::2,:] = a[:,0,:]
+    a2[1::2,:] = a[:,1,:]
+
+    cl[:,0:3] = 1.0
+    cl[:,3] = 0.3
+
+    lines = visuals.Arrow(connect='segments')
+    lines.set_gl_state(depth_test=False)
+    lines.antialias = False
+    lines.set_data(a2, cl, 1, 'segments')
+    view.add(lines)
+
+    return [
+        draw_points(view, a[:,0,:], weights[:,0], face_colors[0], size) if a.shape[0] > 0 else None,
+        lines if a.shape[0] > 0 else None,
+        draw_points(view, a[:,1,:], weights[:,1], face_colors[1], size) if a.shape[0] > 0 else None,
+    ]
+
+def main(synstudyid):
+    synspy_host = os.getenv('SYNSPY_HOST', 'synapse.isrd.isi.edu')
+    synspy_catalog = os.getenv('SYNSPY_CATALOG', '1')
+    credentialfile = os.getenv('DERIVA_CREDENTIALS')
+    if credentialfile is not None:
+        credentials = get_credential(synspy_host, credentialfile)
+    else:
+        credentials = get_credential(synspy_host)
+
+    catalog = ErmrestCatalog('https', synspy_host, synspy_catalog, credentials)
+    store = HatracStore('https', synspy_host, credentials)
+
+    study = SynapticPairStudy.from_study_id(catalog, synstudyid)
+    study.retrieve_data(store)
+
+    print ('Showing registration for Synaptic Pair Study RID=%s' % study._metadata['RID'])
+    print ('grid scale: %(z)s, %(y)s, %(x)s' % study.spacing)
+    print ('VIEW_MATRIX="%s"' % json.dumps(study.alignment))
+
+    # get first measure (raw core) as weight
+    n1weight = study.n1[:,3]
+    n2weight = study.n2[:,3]
+    s1weight = study.s1[:,3]
+    s2weight = study.s2[:,3]
+
+    segment_sizes = get_env_splat_sizes()
+    nuc_pair_radius = float(os.getenv('NUC_PAIRING_RADIUS', '15.0'))
+    syn_pair_radius = float(os.getenv('SYN_PAIRING_RADIUS', '5.0'))
+
+    def float_if(x, reciprocate=False):
+        if x is not None:
+            if reciprocate:
+                return 1.0/float(x)
+            else:
+                return float(x)
+        else:
+            return x
+
+    nuc_dx_core_ratio = float_if(os.getenv('NUC_CORE_DX_RATIO'), reciprocate=True)
+    syn_dx_core_ratio = float_if(os.getenv('SYN_CORE_DX_RATIO'), reciprocate=True)
+
+    nuc_core_max_ratio = float_if(os.getenv('NUC_MAX_RATIO'))
+    syn_core_max_ratio = float_if(os.getenv('SYN_MAX_RATIO'))
+
+    def array_3d_bbox(aa, merge=None):
+        results = np.zeros((2,3), dtype=np.float32)
+        for d in range(results.shape[1]):
+            results[0,d] = min([ a[:,d].min() for a in aa if a.shape[0] > 0])
+            results[1,d] = max([ a[:,d].max() for a in aa if a.shape[0] > 0])
+            if merge is not None:
+                results[0,d] = min(results[0,d], merge[0,d])
+                results[1,d] = max(results[1,d], merge[1,d])
+        return results
+
+    def print_pair_stats(vpairs, wpairs):
+        rms_dx = (np.square((vpairs[:,1,:] - vpairs[:,0,:])).sum())**0.5
+        rms_w  = (np.square((wpairs[:,1] - wpairs[:,0])).sum())**0.5
+        print ('Found %d shared points RMS dx=%f i=%f.' % (vpairs.shape[0], rms_dx, rms_w))
+
+    n1_to_n2, n2_to_n1 = study.nuc_pairing_maps((nuc_pair_radius,), nuc_dx_core_ratio, nuc_core_max_ratio)
+    s1_to_s2, s2_to_s1 = study.syn_pairing_maps((syn_pair_radius,), syn_dx_core_ratio, syn_core_max_ratio)
+
+    # unpack single-step sweep result dimension for viz
+    n1_to_n2 = n1_to_n2[0,:]
+    n2_to_n1 = n2_to_n1[0,:]
+    s1_to_s2 = s1_to_s2[0,:]
+    s2_to_s1 = s2_to_s1[0,:]
+
+    def get_parts(a1, a2, p1, p2):
+        # get full (X, k) pointcloud subsets
+        paired1, paired2 = study.get_pairs(a1, p1, p2)
+        unpaired1 = study.get_unpaired(a1, p1)
+        unpaired2 = study.get_unpaired(a2, p2)
+
+        # mangle for our viz task by splitting out XYZ vectors and weights
+        pair_p = np.zeros((paired1.shape[0], 2, 3), dtype=np.float32)
+        pair_p[:,0,:] = centroids_zx_swap(paired1[:,0:3])
+        pair_p[:,1,:] = centroids_zx_swap(paired2[:,0:3])
+
+        pair_w = np.zeros((paired1.shape[0], 2), dtype=np.float32)
+        pair_w[:,0] = paired1[:,3]
+        pair_w[:,1] = paired2[:,3]
+
+        up1_p = centroids_zx_swap(unpaired1[:,0:3])
+        up2_p = centroids_zx_swap(unpaired2[:,0:3])
+
+        up1_w = unpaired1[:,3]
+        up2_w = unpaired2[:,3]
+
+        print_pair_stats(pair_p, pair_w)
+        return up1_p, pair_p, up2_p, up1_w, pair_w, up2_w
+
+    nuc1, nucP, nuc2, n1weight, nPweight, n2weight = get_parts(n1_to_n2, n2_to_n1, study.n1, study.n2)
+    bbox = array_3d_bbox([nuc1, nucP[:,0,:], nucP[:,1,:], nuc2])
+
+    syn1, synP, syn2, s1weight, sPweight, s2weight = get_parts(s1_to_s2, s2_to_s1, study.s1, study.s2)
+    bbox = array_3d_bbox([syn1, synP[:,0,:], synP[:,1,:], syn2], bbox)
+
+    # offset origin to center of bbox and normalize for visualization
+    renormalize_inplace([n1weight, nPweight[:,0], nPweight[:,1], n2weight])
+    origin = (bbox[1,:] - bbox[0,:]) / 2
+    scale = origin.max()
+    nuc1 = (nuc1 - origin)/scale
+    nuc2 = (nuc2 - origin)/scale
+    nucP = (nucP - origin)/scale
+
+    renormalize_inplace([s1weight, sPweight[:,0], sPweight[:,1], s2weight])
+    syn1 = (syn1 - origin)/scale
+    syn2 = (syn2 - origin)/scale
+    synP = (synP - origin)/scale
+
+    bgcolor = os.getenv('BACKGROUND_RGB', '0.15,0.15,0.15')
+    bgcolor = tuple([ float(c) for c in bgcolor.split(',') ]) + (1.0,)
+    canvas = vispy.scene.SceneCanvas(keys='interactive', show=True, bgcolor=bgcolor)
+
+    scatters = []
+
+    def key_press(event):
+        if event.key in {'1', '2', '3', '4', '5', '6', '7', '8', '9', '0'}:
+            mapping = {str(i+1): i for i in range(9)}
+            mapping['0'] = 9
+            idx = mapping[event.key]
+            for s in scatters[idx:idx+1]:
+                if s is not None:
+                    s.visible = not s.visible
+        canvas.update()
+
+    canvas.events.key_press.connect(key_press)
+
+    view = canvas.central_widget.add_view()
+    view.set_gl_state(depth_test=False)
+
+    nuc_face_colors = ( (0, 1, 1, 0.4), (1, 1, 0, 0.4) )
+    syn_face_colors = ( (0, 0.9, 0.9, 0.9), (1, 1, 0, 0.9) )
+    
+
+    scatters.extend([
+        draw_points(view, nuc1, n1weight, nuc_face_colors[0], segment_sizes[0]) if nuc1.shape[0] else None,
+    ] + (draw_pairs(view, nucP, nPweight, nuc_face_colors, segment_sizes[0]) if nucP.shape[0] else [None, None, None]) + [
+        draw_points(view, nuc2, n2weight, nuc_face_colors[1], segment_sizes[0]) if nuc2.shape[0] else None,
+    ])
+
+    scatters.extend([
+        draw_points(view, syn1, s1weight, syn_face_colors[0], segment_sizes[1]) if syn1.shape[0] else None,
+    ] + (draw_pairs(view, synP, sPweight, syn_face_colors, segment_sizes[1]) if synP.shape[0] else [None, None, None]) + [
+        draw_points(view, syn2, s2weight, syn_face_colors[1], segment_sizes[1]) if syn2.shape[0] else None,
+    ])
+
+    if os.getenv('SHOW_AXES', 'true').lower() != 'false':
+        axis = visuals.XYZAxis(parent=view.scene)
+    #view.camera = 'turntable'
+    view.camera = 'arcball'
+    vispy.app.run()
+    
+    return 0
+    
+if __name__ == '__main__':
+    assert len(sys.argv) == 2, "usage: synspy-register synstudyid"
+    result = main(sys.argv[1])
+    sys.exit(result)

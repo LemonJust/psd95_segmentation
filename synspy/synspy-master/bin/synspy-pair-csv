@@ -1,0 +1,407 @@
+#!/usr/bin/python
+
+#
+# Copyright 2018 University of Southern California
+# Distributed under the (new) BSD License. See LICENSE.txt for more info.
+#
+
+import sys
+import os
+import os.path
+import json
+import numpy as np
+import csv
+
+from requests import HTTPError
+from deriva.core import ErmrestCatalog, HatracStore, get_credential, urlquote
+from synspy.analyze.block import synaptic_footprints
+from synspy.analyze.pair import SynapticPairStudy, ImageGrossAlignment
+from synspy.analyze.util import transform_points, centroids_zx_swap
+
+servername = os.getenv('SYNAPSE_SERVER', 'synapse.isrd.isi.edu')
+catalog_id = os.getenv('SYNAPSE_CATALOG', '1')
+dump_dir = '.'
+dump_dir = os.getenv('DUMP_DIR', dump_dir)
+cache_dir = os.getenv('CACHE_DIR', './cache')
+pairing_radius = float(os.getenv('SYNAPSE_PAIR_RADIUS', '4.0'))
+disable_3point = os.getenv('DISABLE_3POINT', 'false').lower() == 'true'
+use_intersect = os.getenv('USE_INTERSECT', 'false').lower() == 'true'
+classifier_override = json.loads(os.getenv('SYNAPSE_CLASSIFIER', 'null'))
+
+print('Effective SYNAPSE_SERVER="%s"' % servername)
+print('Effective SYNAPSE_CATALOG="%s"' % catalog_id)
+print('Effective SYNAPSE_PAIR_RADIUS="%s"' % pairing_radius)
+print('Effective CACHE_DIR="%s"' % cache_dir)
+print('Effective DUMP_DIR="%s"' % dump_dir)
+print('Effective DISABLE_3POINT="%s"' % disable_3point)
+print('Effective USE_INTERSECT="%s"' % use_intersect)
+print("Effective SYNAPSE_CLASSIFIER='%s'" % json.dumps(classifier_override))
+
+if cache_dir == '':
+    cache_dir = None
+
+credentials = get_credential(servername)
+catalog = ErmrestCatalog('https', servername, catalog_id, credentials)
+store = HatracStore('https', servername, credentials)
+
+def get_centroids_measures_from_pair(pair_study, voxel_image_aligner):
+    """Return (side_by_side_data, study_id) for study.
+
+    Returns:
+    - side_by_side_data: ndarray with shape (N, 15)  [or (N, 17) if red measures are available]
+    - study_id: scalar value shared for whole result
+
+    N results comprise before-only, paired, and after-only point sets.
+
+    Fields of each points comprised of:
+    - Z coord for before point
+    - Y coord for before point
+    - X coord for before point
+    - core measure for before point
+    - hollow measure for before point
+    - DoG core measure for before point
+    - DoG hollow measure for before point
+    - [red measure for before point (in atypical multi-channel mode!)]
+    - Z coord for after point
+    - Y coord for after point
+    - X coord for after point
+    - core measure for after point
+    - hollow measure for after point
+    - DoG core measure for after point
+    - DoG hollow measure for after point
+    - [red measure for after point (in atypical multi-channel mode!)]
+    - pairing status (0: paired, 1: before-only, or 2: after-only)
+
+    Point data will be blank when not applicable, e.g. for status==1
+    the after point values are meaningless and filled with zeros.
+
+    """
+    image1 = ImageGrossAlignment.from_image_id(catalog, pair_study._metadata['Image 1'], disable_gross_align=disable_3point)
+
+    xform = None
+
+    if image1.has_standard:
+        # not safe to access these properties if we don't have_standard...
+        if image1.canonical_alignment_standard_image["RID"] == voxel_image_aligner.RID:
+            xform = image1.M_canonical
+        elif image1.alignment_standard_image["RID"] == voxel_image_aligner.RID:
+            # special case: stop at intermediate reference image w/ custom alignment?
+            sys.stderr.write('using alignment matrix for image %s -> %s\n' % (
+                image1.RID,
+                voxel_image_aligner.RID,
+            ))
+            if image1._metadata["Alignment"]:
+                xform = np.array(image1._metadata["Alignment"], dtype=np.float64)
+
+    if xform is None:
+        if disable_3point:
+            raise ValueError('3-point alignment disabled for image %s' % image1.RID)
+        # fall back to 3-point alignment
+        sys.stderr.write('using adhoc 3-point alignment for image %s -> %s\n' % (
+            image1.RID,
+            voxel_image_aligner.RID,
+        ))
+        xform = np.matmul(image1.M, voxel_image_aligner.M_inv)
+
+    s1_to_s2, s2_to_s1 = pair_study.syn_pairing_maps(max_dx_seq=(pairing_radius,), dx_w_ratio=None, max_w_ratio=None)
+    s1_only = pair_study.get_unpaired(s1_to_s2[0,:], pair_study.s1)
+    s2_only = pair_study.get_unpaired(s2_to_s1[0,:], pair_study.s2)
+    s1_pair, s2_pair = pair_study.get_pairs(s1_to_s2[0,:], pair_study.s1, pair_study.s2)
+    print('Study %s pairing status: before=%s paired0=%s paired1=%s after=%s' % (
+        pair_study._metadata['RID'],
+        s1_only.shape,
+        s1_pair.shape,
+        s2_pair.shape,
+        s2_only.shape,
+    ))
+
+    # set fake override status (not compatible with other synspy tools override coding)
+    s1_only[:,-1] = 1
+    s2_only[:,-1] = 2
+    s2_pair[:,-1] = 0
+
+    # pack centroids+measures into double width side-by-side array
+    # Z1,Y1,X1,...,Z2,Y2,X2,...
+    W = s1_only.shape[1]
+    centroids = np.zeros((
+        s1_only.shape[0] + s1_pair.shape[0] + s2_only.shape[0],
+        W*2-1
+    ), dtype=s1_only.dtype)
+
+    def centroids_xformed(centroids):
+        points_image1_um = centroids_zx_swap(centroids)
+        points_voxel_um = transform_points(xform, points_image1_um, np.float64)
+        return centroids_zx_swap(points_voxel_um)
+
+    pos0 = 0
+    pos1 = s1_only.shape[0]
+    centroids[pos0:pos1,0:3] = centroids_xformed(s1_only[:,0:3])
+    centroids[pos0:pos1,3:W-1] = s1_only[:,3:-1]
+    centroids[pos0:pos1,-1] = s1_only[:,-1] # keep s1_only override status
+
+    pos0 = pos1
+    pos1 = pos0 + s1_pair.shape[0]
+    centroids[pos0:pos1,0:3] = centroids_xformed(s1_pair[:,0:3])
+    centroids[pos0:pos1,3:W-1] = s1_pair[:,3:-1] # ignore s1_pair override status
+    centroids[pos0:pos1,W-1:W-1+3] = centroids_xformed(s2_pair[:,0:3])
+    centroids[pos0:pos1,W-1+3:2*W] = s2_pair[:,3:W] # keep s2_pair override status
+
+    pos0 = pos1
+    pos1 = pos0 + s2_only.shape[0]
+    centroids[pos0:pos1,W-1:W-1+3] = centroids_xformed(s2_only[:,0:3])
+    centroids[pos0:pos1,W-1+3:] = s2_only[:,3:W] # keep s2_only override status
+
+    return (centroids, pair_study._metadata['RID'])
+
+def dump_paired_points_csv_rows(pair_src_rid, voxel_image_aligner, csvwriter1, csvwriter2, include_header=True):
+    """Dump one CSV row per point pair.
+    """
+    if include_header:
+        csvwriter1.writerow(('x1', 'y1', 'z1', 'core1', 'vcn1', 'x2', 'y2', 'z2', 'core2', 'vcn2', 't', 'study_id', 'subject'))
+        csvwriter2.writerow(
+            ('x all', 'y all', 'z all')
+            + ('x 1st', 'y 1st', 'z 1st')
+            + ('x 2nd', 'y 2nd', 'z 2nd')
+            + ('x lost', 'y lost', 'z lost')
+            + ('x gained', 'y gained', 'z gained')
+            + ('x 1st->2nd', 'y 1st->2nd', 'z 1st->2nd')
+            + ('x lost->gained', 'y lost->gained', 'z lost->gained')
+            + ('study_id', 'subject')
+        )
+
+    # try to use pair_src_rid as a Cohort RID
+    r = catalog.get('/attribute/%(atable)s/Cohort=%(crid)s/%(stable)s/RID' % {
+        'atable': urlquote('Cohort_Synaptic Pair Study'),
+        'crid': pair_src_rid,
+        'stable': urlquote('Synaptic Pair Study'),
+    })
+    r.raise_for_status()
+    study_rows = r.json()
+
+    def dump_csv(centroids, study_id, subject):
+        assert int(centroids.shape[1]) % 2 == 1, 'centroids.shape[1] is %s' % (centroids.shape[1],)
+        k = (centroids.shape[1]-1)//2
+
+        loss = centroids[np.where(centroids[:,-1] == 1)]
+        both = centroids[np.where(centroids[:,-1] == 0)]
+        gain = centroids[np.where(centroids[:,-1] == 2)]
+        
+        for i in range(both.shape[0]):
+            csvwriter1.writerow((
+                '%f' % both[i,2],
+                '%f' % both[i,1],
+                '%f' % both[i,0],
+                '%f' % both[i,3],
+                '%f' % both[i,4],
+                '%f' % both[i,k+2],
+                '%f' % both[i,k+1],
+                '%f' % both[i,k+0],
+                '%f' % both[i,k+3],
+                '%f' % both[i,k+4],
+                '%d' % both[i,-1],
+                study_id,
+                subject,
+            ))
+
+        for i in range(loss.shape[0]):
+            csvwriter1.writerow((
+                '%f' % loss[i,2],
+                '%f' % loss[i,1],
+                '%f' % loss[i,0],
+                '%f' % loss[i,3],
+                '%f' % loss[i,4],
+                '',
+                '',
+                '',
+                '',
+                '',
+                '%d' % loss[i,-1],
+                study_id,
+                subject,
+            ))
+
+        for i in range(gain.shape[0]):
+            csvwriter1.writerow((
+                '',
+                '',
+                '',
+                '',
+                '',
+                '%f' % gain[i,k+2],
+                '%f' % gain[i,k+1],
+                '%f' % gain[i,k+0],
+                '%f' % gain[i,k+3],
+                '%f' % gain[i,k+4],
+                '%d' % gain[i,-1],
+                study_id,
+                subject,
+            ))
+
+        every = np.concatenate((loss[:,0:3], both[:,0:3], both[:,k:k+3], gain[:,k:k+3]), axis=0)
+        first = np.concatenate((loss[:,0:3], both[:,0:3]), axis=0)
+        second = np.concatenate((both[:,k:k+3], gain[:,k:k+3]), axis=0)
+        before = loss[:,0:3]
+        after = gain[:,k:k+3]
+            
+        csvwriter2.writerow((
+            # centers of mass combining both pointclouds
+            tuple(every.sum(axis=0) / every.shape[0])
+            # centers of mass for 1st pointcloud
+            + tuple(first.sum(axis=0) / first.shape[0])
+            # centers of mass for 2nd pointcloud
+            + tuple(second.sum(axis=0) / second.shape[0])
+            # centers of "lost" points
+            + tuple(before.sum(axis=0) / before.shape[0])
+            # centers of "gained" points
+            + tuple(after.sum(axis=0) / after.shape[0])
+            # 1st->2nd centroid motion
+            + tuple( (second.sum(axis=0) / second.shape[0]) - (first.sum(axis=0) / first.shape[0]) )
+            # lost->gained centroid motion
+            + tuple( (after.sum(axis=0) / after.shape[0]) - (before.sum(axis=0) / before.shape[0]) )
+            + (study_id, subject)
+        ))
+            
+    if study_rows:
+        # if we found cohort members, then combine them in an ensemble result
+        for row in study_rows:
+            pair_study = SynapticPairStudy.from_study_id(catalog, row['RID'])
+            try:
+                pair_study.retrieve_data(store, classifier_override, use_intersect, cache_dir=cache_dir)
+                centroids, study_id = get_centroids_measures_from_pair(pair_study, voxel_image_aligner)
+                dump_csv(centroids, study_id, pair_study._metadata['Subject'])
+            except Exception as e:
+                print('WARNING: got error "%s" retrieving data for %s, skipping!' % (e, pair_study._metadata['RID']))
+                #raise
+    else:
+        # otherwise, assume pair_src_rid is a single Synaptic Pair Study
+        # this will raise ValueError if it doesn't match anything...
+        pair_study = SynapticPairStudy.from_study_id(catalog, pair_src_rid)
+        pair_study.retrieve_data(store, classifier_override, use_intersect, cache_dir=cache_dir)
+        centroids, study_id = get_centroids_measures_from_pair(pair_study, voxel_image_aligner)
+        dump_csv(centroids, study_id, pair_study._metadata['Subject'])
+
+def paired_csv_cli(voxel_img_rid, pair_src_rid):
+    """Align paired synapses and write CSV output file.
+
+       Arguments:
+         voxel_img_rid: reference Image:RID key
+         pair_src_rid: pair source identifier
+
+       If the pair source identifier is a Synaptic Study Pair:RID key,
+       that pair's synapse pointclouds will be combined into the
+       resulting CSV.
+
+       If the pair source identifier is a Cohort:RID key, all
+       member pairs' synapse pointclouds will be combined into the
+       resulting CSV.
+
+       All involved Image records must have their 3-point alignment
+       coordinates so that synaptic pointclouds can be aligned into
+       the reference image space. If custom alignment matrices are
+       present, they are preferred. With DISABLE_3POINT=true, custom
+       matrices are required.
+
+       Environment parameters:
+         DUMP_DIR: defaults to './'
+         CACHE_DIR: defaults to './cache'
+         SYNAPSE_SERVER: defaults to 'synapse.isrd.isi.edu'
+         SYNAPSE_CATALOG: defaults to '1'
+         DISABLE_3POINT: defaults to 'false'
+         SYNAPSE_CLASSIFIER: JSON formatted classifier override parameters
+
+       Output CSV columns:
+         x1: centroid X coord
+         y1: centroid Y coord
+         z1: centroid Z coord
+         core1: centroid core measure
+         vcn1: centroid vicinity/hollow measure
+         x2: centroid X coord
+         y2: centroid Y coord
+         z2: centroid Z coord
+         core2: centroid core measure
+         vcn2: centroid vicinity/hollow measure
+         t: centroid status 0 (paired), 1 (pre-only), 2 (post-only)
+
+       Output is written to files:
+         - main CSV result: '<DUMP_DIR>/<pair_src_rid>.csv'
+         - cached downloads: <CACHE_DIR>/<object_hash>.<suffix>'
+         - work files: '<DUMP_DIR>/tmp-*'
+
+    """
+    dump_fname1 = '%s/%s_%s.csv' % (dump_dir, pair_src_rid, voxel_img_rid)
+    dump_fname2 = '%s/%s_%s_centers.csv' % (dump_dir, pair_src_rid, voxel_img_rid)
+
+    ref_image_aligner = ImageGrossAlignment.from_image_id(catalog, voxel_img_rid)
+    outf1 = open(dump_fname1, 'w', newline='')
+    outf2 = open(dump_fname2, 'w', newline='')
+    writer1 = csv.writer(outf1)
+    writer2 = csv.writer(outf2)
+    dump_paired_points_csv_rows(pair_src_rid, ref_image_aligner, writer1, writer2)
+    del writer1
+    del writer2
+    outf1.close()
+    outf2.close()
+    print('Dumped paired synapse CSV to %s' % dump_fname1)
+    print('Dumped centers of mass CSV to %s' % dump_fname2)
+
+    return 0
+
+if __name__ == '__main__':
+    try:
+        try:
+            status = paired_csv_cli(*sys.argv[1:])
+            sys.exit(status)
+        except HTTPError as e:
+            if hasattr(e, 'response'):
+                if e.response.status_code == 401:
+                    sys.stderr.write("""
+ERROR: Please use deriva-auth to authenticate with the server %s first.
+""" % (
+    servername,
+))
+                    sys.exit(1)
+            raise
+    except Exception as e:
+        sys.stderr.write("""
+ERROR: %s
+usage: synspy-pair-csv <voxel_img_rid> <pair_src_rid> 
+%s
+
+Examples:
+
+- synspy-pair-npz 1R0 FGE
+   - pair study FGE over its "before" image 1R0
+- synspy-pair-npz ImgZfDsy20160116A2 SynStd6025
+   - pair study SynStd6025 over its "before" image ImgZfDsy20160116A2
+- synspy-pair-npz ZBG 105T
+   - cohort 105T over atlas image ZBG
+
+This tool accepts either "ID" and "RID" column values for each argument.
+
+""" % (
+    e,
+    paired_csv_cli.__doc__
+))
+        raise
+        sys.exit(1)
+
+
+# other example arguments
+"""
+        ('ZBG', '105T'), # ensemble over atlas image
+        
+        ('1R0', 'FGE'), # before
+        ('29G', 'BRJ'), # SynStd6025 before
+        ('HWY', 'JK6'), # before
+        ('G22', 'JJP'), # before
+        ('Z60', 'ZHT'), # before
+
+        ('1R4', 'FGE'), # after
+        ('29C', 'BRJ'), # SynSTd6025 after
+        ('HXA', 'JK6'), # after
+        ('G2E', 'JJP'), # after
+        ('Z6C', 'ZHT'), # after
+
+        ('ZBG', 'FGE'), # atlas
+"""
+

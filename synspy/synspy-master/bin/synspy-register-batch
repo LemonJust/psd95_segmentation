@@ -1,0 +1,46 @@
+#!/usr/bin/python
+#
+# Copyright 2015-2017 University of Southern California
+# Distributed under the (new) BSD License. See LICENSE.txt for more info.
+#
+
+import os
+import sys
+import pcl
+import pcl.registration
+import numpy as np
+import csv
+import math
+
+from synspy.register import get_env_grid_scale, register, dump_registered_file_pair
+
+def main(filenames):
+    zyx_grid_scale = get_env_grid_scale()
+    nuc_filenames = filenames[0:2]
+    syn_filenames = filenames[2:4] if len(filenames) == 4 else None
+    M, angles, nuc_parts, syn_parts = register(nuc_filenames, zyx_grid_scale, syn_filenames)
+    
+    dump_registered_file_pair(
+        [ 'processed-%s' % filename for filename in nuc_filenames ],
+        nuc_parts
+    )
+    if syn_filenames is not None:
+        dump_registered_file_pair(
+            [ 'processed-%s' % filename for filename in syn_filenames ],
+            syn_parts
+        )
+    print('VIEW_MATRIX="%s"' % (
+        '[%s]' % ', '.join([
+            '[%s]' % ', '.join([
+                "%f" % M[i,j]
+                for j in range(4)
+            ])
+            for i in range(4)
+        ])
+    ))
+    print('VIEW_ROTATE="%s"' % ','.join([str(r * 180./math.pi) for r in angles]))
+
+if __name__ == '__main__':
+    assert len(sys.argv) in (3, 5), "usage: synspy-register nucfile1 nucfile2 [synfile1 synfile2]"
+    result = main(sys.argv[1:])
+    sys.exit(result)
