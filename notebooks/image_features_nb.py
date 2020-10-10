@@ -28,7 +28,8 @@ print(files)
 
 info_df = pd.read_csv('D:/Code/repos/psd95_segmentation/data/raw/karls_good2.csv')
 
-info_year = info_df.loc[:, ['Source Image', 'Subject Issue Date']].sort_values(by=['Source Image'])
+info_year = info_df.loc[:, ['Source Image',
+                            'Subject Issue Date']].sort_values(by=['Source Image'])
 info_year.drop_duplicates(subset='Source Image', inplace=True)
 info_year
 
@@ -59,13 +60,9 @@ prc_green = get_img_percentiles("green", files, padding)
 prc_red = get_img_percentiles("red", files, padding)
 
 # %% md
-
-Combine
-names, year and prcentiles
-into
-a
-data
-frame
+"""
+Combine names, year and prcentiles into a data frame.
+"""
 
 # %% merge year w percentile
 
@@ -85,16 +82,10 @@ img_intensity_df = pd.DataFrame(np.concatenate((years, prc_green, prc_red), axis
 img_intensity_df.insert(0, 'Name', names, True)
 
 # %% md
-
 ### Figure out what time point it is.
-If
-the
-old
-image
-name
-ends
-with a 6 or 5 then its tp 2; 3 or 2 is tp 1.
-
+""" 
+If the old image name ends with a 6 or 5 then its tp 2; 3 or 2 is tp 1.
+"""
 # %%
 
 id_segments = []

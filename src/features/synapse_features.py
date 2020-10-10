@@ -136,14 +136,16 @@ def get_one_volume(volume, centroid, box_size):
         array : cropped box
     """
 
-    centroid = np.array(centroid)
-    padding = np.array((box_size - 1) // 2)
+    centroid = np.array(centroid).astype(int)
+    padding = ((np.array(box_size) - 1)//2).astype(int)
 
     start = centroid - padding
     end = centroid + padding + 1
 
     cropped_volume = volume[start[0]:end[0], start[1]:end[1], start[2]:end[2]]
-    return cropped_volume
+
+    return np.array(cropped_volume)
+
 
 def get_centroids_from_csv(csv_filename, img_resolution):
     """
@@ -167,6 +169,7 @@ def get_centroids_from_csv(csv_filename, img_resolution):
 
     return centroids_tiff
 
+
 def get_intensity_from_csv(csv_filename, img_resolution):
     """
     Get centroids in tiff space directly from csv file.
@@ -187,27 +190,6 @@ def get_intensity_from_csv(csv_filename, img_resolution):
     centroids_core_hollow = intensity_df.to_numpy()
 
     return centroids_core_hollow
-
-def get_cohort(csv_filename, img_resolution):
-    """
-    Get all the info from the pair-study csv. Synapse coordinates are in physical
-    space, so you need to know the original resolution to go to pixel space.
-
-    Parameters:
-        csv_filename (string) : path and filename of the csv.
-        img_resolution : image resolution in order ZYX.
-
-    Returns:
-        syn (dict) : array of centroids in tiff sace in pixels, in order ZYX.
-
-    """
-
-    col_list = ["raw core", "raw hollow"]
-
-    intensity_df = pd.read_csv(csv_filename, usecols=col_list)
-    centroids_core_hollow = intensity_df.to_numpy()
-
-    return syn
 
 ################################ END OF GOOD ##############################################
 # get_centroids_from_csv: centroid coordinates in the Tiff space directly as in csv (Z,Y,X)

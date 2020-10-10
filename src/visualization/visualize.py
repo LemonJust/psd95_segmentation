@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import pickle
 import seaborn as sns
 import requests
+import plotly.graph_objs as go
 
 
 def plot_histogram(data, xlim, ylim):
@@ -29,6 +30,32 @@ def plot_histogram(data, xlim, ylim):
     plt.ylim((ylim[0], ylim[1]))
     plt.xlim((xlim[0], xlim[1]))
     plt.show()
+
+def plotly_histo(x0,x1,binwidth,x0_label,x1_label,title):
+
+    min_hist = min(min(x0), min(x1))
+    max_hist = max(max(x0), max(x1))
+
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(x=x0,
+                               xbins=dict(start=min_hist, size=binwidth, end=max_hist),
+                               name=x0_label,
+                               histnorm='percent', ))
+
+    fig.add_trace(go.Histogram(x=x1,
+                               xbins=dict(start=min_hist, size=binwidth, end=max_hist),
+                               name=x1_label,
+                               histnorm='percent', ))
+
+    # The two histograms are drawn on top of another
+    fig.update_layout(
+        barmode='overlay',
+        title_text=title,  # title of plot
+        xaxis_title_text='Intensity, a.u.',  # xaxis label
+        yaxis_title_text='%',  # yaxis label
+    )
+    fig.update_traces(opacity=0.5)
+    fig.show()
 
 
 def plot_boxplot(df, x_axis, y_axis):
